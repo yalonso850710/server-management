@@ -3,9 +3,6 @@
   hosts: all
   gather_facts: no
   become: yes
-  become_method: sudo
-  vars_files:
-    - credentials.yml
     
   tasks:
     - name: Check disk space usage
