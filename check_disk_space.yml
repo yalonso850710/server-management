@@ -1,0 +1,14 @@
+---
+- name: Check Disk Space on Servers
+  hosts: all
+  gather_facts: no
+  become: yes
+
+  tasks:
+    - name: Check disk space usage
+      shell: df -h
+      register: disk_space
+
+    - name: Display disk space usage
+      debug:
+        msg: "{{ disk_space.stdout }}"
