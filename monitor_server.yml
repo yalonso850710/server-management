@@ -1,0 +1,30 @@
+---
+- name: Monitor Ubuntu Server
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  tasks:
+    - name: Display CPU usage
+      shell: "top -bn1 | grep 'Cpu(s)'"
+      register: cpu_usage
+
+    - name: Display Memory usage
+      shell: "free -m"
+      register: memory_usage
+
+    - name: Display Disk usage
+      shell: "df -h"
+      register: disk_usage
+
+    - name: Print CPU usage
+      debug:
+        msg: "{{ cpu_usage.stdout }}"
+
+    - name: Print Memory usage
+      debug:
+        msg: "{{ memory_usage.stdout }}"
+
+    - name: Print Disk usage
+      debug:
+        msg: "{{ disk_usage.stdout }}"
