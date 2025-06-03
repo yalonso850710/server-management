@@ -15,18 +15,28 @@
       set_fact:
         php_logrotate_paths: "{{ php_logrotate_files.files | map(attribute='path') | list }}"
 
-    - name: Find plesk-php** binaries
+    - name: Find plesk-php** binaries in /opt/plesk/php/*/bin/
       find:
         paths: /opt/plesk/php/
         patterns: "plesk-php*"
         file_type: file
+        recurse: yes
       register: php_binaries
 
     - name: Extract PHP versions from binaries
       set_fact:
-        detected_php_versions: "{{ php_binaries.files | map(attribute='path') | map('basename') | list }}"
+        detected_php_versions: >-
+          {{
+            php_binaries.files
+            | map(attribute='path')
+            | select('search', '/bin/plesk-php')
+            | map('basename')
+            | map('regex_replace', '^plesk-php([0-9]+)$', 'plesk-php\\1')
+            | list
+          }}
 
     - name: Ensure plesk-php*-fpm logrotate config exists for each PHP version
+      become: true
       shell: |
         echo '/var/log/{{ item }}-fpm/*log {
             daily
@@ -45,7 +55,7 @@
         }' | tee /etc/logrotate.d/{{ item }}-fpm
       args:
         executable: /bin/bash
-      loop: "{{ detected_php_versions | default([]) }}"
+      loop: "{{ detected_php_versions | unique }}"
       when: "'/etc/logrotate.d/' ~ item ~ '-fpm' not in php_logrotate_paths"
 
     # Vuelve a buscar los fpm después de crear sintéticos
