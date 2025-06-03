@@ -1,0 +1,55 @@
+---
+- name: Configure logrotate for Plesk PHP-FPM
+  hosts: all
+  become: true
+  tasks:
+
+    - name: Find plesk-php*-fpm logrotate files
+      find:
+        paths: /etc/logrotate.d/
+        patterns: "plesk-php*-fpm"
+        file_type: file
+      register: php_logrotate_files
+
+    - name: Create logrotate config for Plesk PHP
+      copy:
+        dest: /etc/logrotate.plesk-php.conf
+        content: |
+          # Auto-generated logrotate config for Plesk PHP-FPM
+          {% for file in php_logrotate_files.files %}
+          include {{ file.path }}
+          {% endfor %}
+
+    - name: Create logrotate systemd service
+      copy:
+        dest: /etc/systemd/system/logrotate-plesk-php.service
+        content: |
+          [Unit]
+          Description=Rotate logs for Plesk PHP versions only
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/sbin/logrotate /etc/logrotate.plesk-php.conf
+
+    - name: Create systemd timer for logrotate service
+      copy:
+        dest: /etc/systemd/system/logrotate-plesk-php.timer
+        content: |
+          [Unit]
+          Description=Daily timer for Plesk PHP logrotate
+
+          [Timer]
+          OnCalendar=daily
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Reload systemd daemon
+      command: systemctl daemon-reexec
+
+    - name: Enable and start logrotate timer
+      systemd:
+        name: logrotate-plesk-php.timer
+        enabled: yes
+        state: started
