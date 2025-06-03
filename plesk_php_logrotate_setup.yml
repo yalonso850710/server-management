@@ -11,7 +11,7 @@
         file_type: file
       register: php_logrotate_files
 
-    - name: Set list of file paths
+    - name: Extract file paths
       set_fact:
         php_logrotate_paths: "{{ php_logrotate_files.files | map(attribute='path') | list }}"
 
@@ -24,8 +24,8 @@
         dest: /etc/logrotate.plesk-php.conf
         content: |
           # Auto-generated logrotate config for Plesk PHP-FPM
-          {% for path in php_logrotate_paths %}
-          include {{ path }}
+          {% for file in php_logrotate_paths %}
+          include {{ file }}
           {% endfor %}
       when: php_logrotate_paths | length > 0
 
@@ -83,4 +83,9 @@
       command: systemctl daemon-reload
       when: php_logrotate_paths | length > 0
 
-    - name: Enable an
+    - name: Enable and start logrotate timer if files found
+      systemd:
+        name: logrotate-plesk-php-fpm.timer
+        enabled: yes
+        state: started
+      when: php_logrotate_paths | length > 0
