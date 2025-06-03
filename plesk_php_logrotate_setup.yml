@@ -4,21 +4,6 @@
   become: true
   tasks:
 
-    - name: Find existing plesk-php*-fpm logrotate files
-      find:
-        paths: /etc/logrotate.d/
-        patterns: "plesk-php*-fpm"
-        file_type: file
-      register: existing_php_logrotate_files
-
-    - name: Extract existing logrotate file paths
-      set_fact:
-        existing_php_logrotate_paths: "{{ existing_php_logrotate_files.files | map(attribute='path') | list }}"
-
-    - name: Debug existing logrotate files
-      debug:
-        msg: "Found existing logrotate files: {{ existing_php_logrotate_paths }}"
-
     # Find plesk-php binaries (excluding -fpm)
     - name: Find plesk-php binaries (excluding -fpm)
       find:
@@ -58,8 +43,24 @@
           }
         mode: '0644'
       loop: "{{ detected_php_versions | default([]) }}"
-      when: "'/etc/logrotate.d/{{ item }}-fpm' not in existing_php_logrotate_paths"
+      when: not lookup('file', '/etc/logrotate.d/{{ item }}-fpm', errors='ignore')
       register: synthetic_configs_created
+
+    # Find existing plesk-php*-fpm logrotate files
+    - name: Find existing plesk-php*-fpm logrotate files
+      find:
+        paths: /etc/logrotate.d/
+        patterns: "plesk-php*-fpm"
+        file_type: file
+      register: existing_php_logrotate_files
+
+    - name: Extract existing logrotate file paths
+      set_fact:
+        existing_php_logrotate_paths: "{{ existing_php_logrotate_files.files | map(attribute='path') | list }}"
+
+    - name: Debug existing logrotate files
+      debug:
+        msg: "Found existing logrotate files: {{ existing_php_logrotate_paths }}"
 
     # Re-scan for logrotate files after creating synthetic ones
     - name: Re-scan for plesk-php*-fpm logrotate files after synthetic creation
