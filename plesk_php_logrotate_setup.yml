@@ -45,6 +45,13 @@
           [Install]
           WantedBy=timers.target
 
+    - name: Ensure files are written before reload
+      meta: flush_handlers
+
+    - name: Wait briefly to ensure systemd sees the new unit
+      pause:
+        seconds: 2
+
     - name: Reload systemd to recognize new units
       systemd:
         daemon_reload: yes
