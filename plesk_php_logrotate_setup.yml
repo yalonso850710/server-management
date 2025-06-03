@@ -18,7 +18,7 @@
     - name: Filter non-fpm plesk-php files
       set_fact:
         non_fpm_php_files: >-
-          {{ php_files.files | map(attribute='path') | select("search", '-fpm', invert=True) | list }}
+          {{ php_files.files | map(attribute='path') | reject("search", "-fpm") | list }}
 
     - name: Create plesk-php*-fpm files from non-fpm ones if needed
       copy:
