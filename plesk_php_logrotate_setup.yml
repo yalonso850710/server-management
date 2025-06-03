@@ -19,6 +19,60 @@
       debug:
         msg: "{{ php_logrotate_paths }}"
 
+    # Si NO hay archivos fpm, buscar binarios plesk-php** y crear los fpm
+    - name: Find plesk-php** binaries if no fpm logrotate files exist
+      find:
+        paths: /opt/plesk/php/
+        patterns: "plesk-php*"
+        file_type: file
+      register: php_binaries
+      when: php_logrotate_paths | length == 0
+
+    - name: Extract PHP versions from binaries
+      set_fact:
+        detected_php_versions: "{{ php_binaries.files | map(attribute='path') | map('basename') | list }}"
+      when: php_logrotate_paths | length == 0
+
+    - name: Create synthetic plesk-php*-fpm logrotate configs for each PHP version
+      shell: |
+        echo '/var/log/{{ item }}-fpm/*log {
+            daily
+            missingok
+            notifempty
+            sharedscripts
+            delaycompress
+            dateext
+            dateformat -%Y%m%d
+            rotate 7
+            compress
+            create 640 root root
+            postrotate
+                /bin/kill -SIGUSR1 `cat /run/{{ item }}-fpm.pid 2>/dev/null` 2>/dev/null || true
+            endscript
+        }' | tee /etc/logrotate.d/{{ item }}-fpm
+      args:
+        executable: /bin/bash
+      loop: "{{ detected_php_versions | default([]) }}"
+      when: php_logrotate_paths | length == 0 and detected_php_versions is defined
+
+    # Vuelve a buscar los fpm después de crear sintéticos
+    - name: Re-scan for plesk-php*-fpm logrotate files after synthetic creation
+      find:
+        paths: /etc/logrotate.d/
+        patterns: "plesk-php*-fpm"
+        file_type: file
+      register: php_logrotate_files_after
+      when: php_logrotate_paths | length == 0
+
+    - name: Update php_logrotate_paths if synthetic created
+      set_fact:
+        php_logrotate_paths: "{{ php_logrotate_files_after.files | map(attribute='path') | list }}"
+      when: php_logrotate_paths | length == 0
+
+    - name: Debug final logrotate files
+      debug:
+        msg: "{{ php_logrotate_paths }}"
+
     - name: Create logrotate config for Plesk PHP if files found
       copy:
         dest: /etc/logrotate.plesk-php.conf
