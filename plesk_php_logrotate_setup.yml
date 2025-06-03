@@ -1,102 +1,40 @@
 ---
-- name: Configure logrotate for Plesk PHP-FPM with fallback detection
+- name: Configure logrotate for Plesk PHP-FPM only if relevant files exist
   hosts: all
   become: true
   tasks:
 
-    # Find plesk-php binaries (excluding -fpm)
-    - name: Find plesk-php binaries (excluding -fpm)
-      find:
-        paths: /opt/plesk/php/
-        patterns: "plesk-php*"
-        file_type: file
-        excludes: "*-fpm"
-      register: php_binaries
-
-    - name: Extract PHP versions from binary paths
-      set_fact:
-        detected_php_versions: "{{ php_binaries.files | map(attribute='path') | map('basename') | list }}"
-
-    - name: Debug detected PHP versions
-      debug:
-        msg: "Detected PHP versions: {{ detected_php_versions | default([]) }}"
-
-    # Create synthetic logrotate configs for detected PHP versions if they don't exist
-    - name: Create synthetic plesk-php*-fpm logrotate configs if they don't exist
-      copy:
-        dest: "/etc/logrotate.d/{{ item }}-fpm"
-        content: |
-          /var/log/{{ item }}-fpm/*log {
-              daily
-              missingok
-              notifempty
-              sharedscripts
-              delaycompress
-              dateext
-              dateformat -%Y%m%d
-              rotate 7
-              compress
-              create 640 root root
-              postrotate
-                  /bin/kill -SIGUSR1 `cat /run/{{ item }}-fpm.pid 2>/dev/null` 2>/dev/null || true
-              endscript
-          }
-        mode: '0644'
-      loop: "{{ detected_php_versions | default([]) }}"
-      when: not lookup('file', '/etc/logrotate.d/{{ item }}-fpm', errors='ignore')
-      register: synthetic_configs_created
-
-    # Find existing plesk-php*-fpm logrotate files
-    - name: Find existing plesk-php*-fpm logrotate files
+    - name: Find plesk-php*-fpm logrotate files
       find:
         paths: /etc/logrotate.d/
         patterns: "plesk-php*-fpm"
         file_type: file
-      register: existing_php_logrotate_files
+      register: php_logrotate_files
 
-    - name: Extract existing logrotate file paths
+    - name: Extract file paths
       set_fact:
-        existing_php_logrotate_paths: "{{ existing_php_logrotate_files.files | map(attribute='path') | list }}"
+        php_logrotate_paths: "{{ php_logrotate_files.files | map(attribute='path') | list }}"
 
-    - name: Debug existing logrotate files
+    - name: Debug found logrotate files
       debug:
-        msg: "Found existing logrotate files: {{ existing_php_logrotate_paths }}"
+        msg: "{{ php_logrotate_paths }}"
 
-    # Re-scan for logrotate files after creating synthetic ones
-    - name: Re-scan for plesk-php*-fpm logrotate files after synthetic creation
-      find:
-        paths: /etc/logrotate.d/
-        patterns: "plesk-php*-fpm"
-        file_type: file
-      register: final_php_logrotate_files
-
-    - name: Extract final logrotate file paths
-      set_fact:
-        final_php_logrotate_paths: "{{ final_php_logrotate_files.files | map(attribute='path') | list }}"
-
-    - name: Debug final logrotate files
-      debug:
-        msg: "Final logrotate files to include: {{ final_php_logrotate_paths }}"
-
-    # Create main logrotate config that includes all found files
     - name: Create logrotate config for Plesk PHP if files found
       copy:
         dest: /etc/logrotate.plesk-php.conf
         content: |
           # Auto-generated logrotate config for Plesk PHP-FPM
-          {% for file in final_php_logrotate_paths %}
+          {% for file in php_logrotate_paths %}
           include {{ file }}
           {% endfor %}
-        mode: '0644'
-      when: final_php_logrotate_paths | length > 0
+      when: php_logrotate_paths | length > 0
 
     - name: Remove logrotate config if no plesk-php fpm files found
       file:
         path: /etc/logrotate.plesk-php.conf
         state: absent
-      when: final_php_logrotate_paths | length == 0
+      when: php_logrotate_paths | length == 0
 
-    # Systemd service management
     - name: Create systemd service file if files found
       copy:
         dest: /etc/systemd/system/logrotate-plesk-php-fpm.service
@@ -107,14 +45,13 @@
           [Service]
           Type=oneshot
           ExecStart=/usr/sbin/logrotate /etc/logrotate.plesk-php.conf
-        mode: '0644'
-      when: final_php_logrotate_paths | length > 0
+      when: php_logrotate_paths | length > 0
 
     - name: Remove systemd service file if no files found
       file:
         path: /etc/systemd/system/logrotate-plesk-php-fpm.service
         state: absent
-      when: final_php_logrotate_paths | length == 0
+      when: php_logrotate_paths | length == 0
 
     - name: Create systemd timer file if files found
       copy:
@@ -129,65 +66,26 @@
 
           [Install]
           WantedBy=timers.target
-        mode: '0644'
-      when: final_php_logrotate_paths | length > 0
+      when: php_logrotate_paths | length > 0
 
     - name: Remove systemd timer file if no files found
       file:
         path: /etc/systemd/system/logrotate-plesk-php-fpm.timer
         state: absent
-      when: final_php_logrotate_paths | length == 0
+      when: php_logrotate_paths | length == 0
 
-    # Clean up synthetic configs if they were created but no actual PHP processes exist
-    - name: Check if synthetic configs should be removed (no corresponding FPM processes)
-      stat:
-        path: "/run/{{ item | basename | regex_replace('-fpm$', '') }}-fpm.pid"
-      loop: "{{ final_php_logrotate_paths }}"
-      register: fpm_pid_check
-      when: synthetic_configs_created is defined and synthetic_configs_created.changed
-
-    - name: Remove synthetic logrotate configs for non-existent FPM processes
-      file:
-        path: "{{ item.item }}"
-        state: absent
-      loop: "{{ fpm_pid_check.results | default([]) }}"
-      when: 
-        - synthetic_configs_created is defined 
-        - synthetic_configs_created.changed
-        - not item.stat.exists
-      loop_control:
-        label: "{{ item.item }}"
-
-    # Systemd management
     - name: Wait briefly to ensure systemd sees new unit files
       pause:
         seconds: 2
-      when: final_php_logrotate_paths | length > 0
+      when: php_logrotate_paths | length > 0
 
     - name: Reload systemd to recognize new units if files found
       command: systemctl daemon-reload
-      when: final_php_logrotate_paths | length > 0
-
-    - name: Stop and disable logrotate timer if no files found
-      systemd:
-        name: logrotate-plesk-php-fpm.timer
-        enabled: no
-        state: stopped
-      when: final_php_logrotate_paths | length == 0
-      ignore_errors: yes
+      when: php_logrotate_paths | length > 0
 
     - name: Enable and start logrotate timer if files found
       systemd:
         name: logrotate-plesk-php-fpm.timer
         enabled: yes
         state: started
-      when: final_php_logrotate_paths | length > 0
-
-    # Final status report
-    - name: Report final configuration status
-      debug:
-        msg: |
-          Plesk PHP Logrotate Configuration Summary:
-          - Logrotate files found/created: {{ final_php_logrotate_paths | length }}
-          - Systemd timer status: {{ 'enabled' if final_php_logrotate_paths | length > 0 else 'disabled' }}
-          - Configuration files: {{ final_php_logrotate_paths | join(', ') if final_php_logrotate_paths | length > 0 else 'none' }}
+      when: php_logrotate_paths | length > 0
