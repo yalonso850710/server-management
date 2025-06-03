@@ -15,25 +15,18 @@
       set_fact:
         php_logrotate_paths: "{{ php_logrotate_files.files | map(attribute='path') | list }}"
 
-    - name: Debug found logrotate files
-      debug:
-        msg: "{{ php_logrotate_paths }}"
-
-    # Si NO hay archivos fpm, buscar binarios plesk-php** y crear los fpm
-    - name: Find plesk-php** binaries if no fpm logrotate files exist
+    - name: Find plesk-php** binaries
       find:
         paths: /opt/plesk/php/
         patterns: "plesk-php*"
         file_type: file
       register: php_binaries
-      when: php_logrotate_paths | length == 0
 
     - name: Extract PHP versions from binaries
       set_fact:
         detected_php_versions: "{{ php_binaries.files | map(attribute='path') | map('basename') | list }}"
-      when: php_logrotate_paths | length == 0
 
-    - name: Create synthetic plesk-php*-fpm logrotate configs for each PHP version
+    - name: Ensure plesk-php*-fpm logrotate config exists for each PHP version
       shell: |
         echo '/var/log/{{ item }}-fpm/*log {
             daily
@@ -53,7 +46,7 @@
       args:
         executable: /bin/bash
       loop: "{{ detected_php_versions | default([]) }}"
-      when: php_logrotate_paths | length == 0 and detected_php_versions is defined
+      when: "'/etc/logrotate.d/' ~ item ~ '-fpm' not in php_logrotate_paths"
 
     # Vuelve a buscar los fpm después de crear sintéticos
     - name: Re-scan for plesk-php*-fpm logrotate files after synthetic creation
@@ -62,12 +55,10 @@
         patterns: "plesk-php*-fpm"
         file_type: file
       register: php_logrotate_files_after
-      when: php_logrotate_paths | length == 0
 
     - name: Update php_logrotate_paths if synthetic created
       set_fact:
         php_logrotate_paths: "{{ php_logrotate_files_after.files | map(attribute='path') | list }}"
-      when: php_logrotate_paths | length == 0
 
     - name: Debug final logrotate files
       debug:
