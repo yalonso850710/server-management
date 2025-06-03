@@ -20,7 +20,7 @@
           include {{ file.path }}
           {% endfor %}
 
-    - name: Create logrotate systemd service
+    - name: Ensure logrotate systemd service file exists
       copy:
         dest: /etc/systemd/system/logrotate-plesk-php.service
         content: |
@@ -31,7 +31,7 @@
           Type=oneshot
           ExecStart=/usr/sbin/logrotate /etc/logrotate.plesk-php.conf
 
-    - name: Create systemd timer for logrotate service
+    - name: Ensure logrotate timer file exists
       copy:
         dest: /etc/systemd/system/logrotate-plesk-php.timer
         content: |
@@ -45,16 +45,12 @@
           [Install]
           WantedBy=timers.target
 
-    - name: Ensure files are written before reload
-      meta: flush_handlers
-
-    - name: Wait briefly to ensure systemd sees the new unit
+    - name: Wait briefly to ensure systemd sees new unit files
       pause:
         seconds: 2
 
     - name: Reload systemd to recognize new units
-      systemd:
-        daemon_reload: yes
+      command: systemctl daemon-reload
 
     - name: Enable and start logrotate timer
       systemd:
