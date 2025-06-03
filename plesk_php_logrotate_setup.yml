@@ -1,91 +1,127 @@
 ---
-- name: Configure logrotate for Plesk PHP-FPM only if relevant files exist
+- name: Gestionar logrotate para Plesk PHP-FPM
   hosts: all
-  become: true
-  tasks:
+  become: yes
+  vars:
+    logrotate_dir: /etc/logrotate.d
+    master_config: /etc/logrotate.plesk-php.conf
 
-    - name: Find plesk-php*-fpm logrotate files
+  tasks:
+    - name: Buscar archivos plesk-php* (no FPM)
       find:
-        paths: /etc/logrotate.d/
-        patterns: "plesk-php*-fpm"
+        paths: "{{ logrotate_dir }}"
+        patterns: "plesk-php*"
         file_type: file
       register: php_logrotate_files
 
-    - name: Extract file paths
+    - name: Filtrar solo bases PHP (sin -fpm)
       set_fact:
-        php_logrotate_paths: "{{ php_logrotate_files.files | map(attribute='path') | list }}"
+        php_nonfpm_bases: "{{ php_logrotate_files.files | map(attribute='path') | select('search', 'plesk-php[0-9]+$') | map('basename') | list }}"
 
-    - name: Debug found logrotate files
-      debug:
-        msg: "{{ php_logrotate_paths }}"
+    - name: Buscar archivos plesk-php*-fpm existentes
+      find:
+        paths: "{{ logrotate_dir }}"
+        patterns: "plesk-php*-fpm"
+        file_type: file
+      register: php_fpm_files
 
-    - name: Create logrotate config for Plesk PHP if files found
+    - name: Extraer bases de FPM existentes
+      set_fact:
+        php_fpm_bases: "{{ php_fpm_files.files | map(attribute='path') | map('basename') | map('regex_replace', '-fpm$', '') | list }}"
+
+    - name: Detectar versiones que faltan (gap analysis)
+      set_fact:
+        missing_fpm_bases: "{{ php_nonfpm_bases | difference(php_fpm_bases) }}"
+
+    - name: Crear archivos logrotate FPM faltantes
+      shell: |
+        cat > {{ logrotate_dir }}/{{ item }}-fpm <<EOF
+/var/log/{{ item }}-fpm/*log {
+    daily
+    missingok
+    notifempty
+    sharedscripts
+    delaycompress
+    dateext
+    dateformat -%Y%m%d
+    rotate 7
+    compress
+    create 640 root root
+    postrotate
+        /bin/kill -SIGUSR1 \`cat /run/{{ item }}-fpm.pid 2>/dev/null\` 2>/dev/null || true
+    endscript
+}
+EOF
+      loop: "{{ missing_fpm_bases }}"
+      when: missing_fpm_bases | length > 0
+
+    - name: Re-escanear todos los archivos FPM
+      find:
+        paths: "{{ logrotate_dir }}"
+        patterns: "plesk-php*-fpm"
+        file_type: file
+      register: all_fpm_files
+
+    - name: Crear master config que incluya todos los FPM
       copy:
-        dest: /etc/logrotate.plesk-php.conf
+        dest: "{{ master_config }}"
         content: |
-          # Auto-generated logrotate config for Plesk PHP-FPM
-          {% for file in php_logrotate_paths %}
-          include {{ file }}
+          {% for f in all_fpm_files.files %}
+          include {{ f.path }}
           {% endfor %}
-      when: php_logrotate_paths | length > 0
+      when: all_fpm_files.files | length > 0
 
-    - name: Remove logrotate config if no plesk-php fpm files found
-      file:
-        path: /etc/logrotate.plesk-php.conf
-        state: absent
-      when: php_logrotate_paths | length == 0
+    - name: Configurar systemd service y timer (ejemplo)
+      block:
+        - name: Crear systemd service para logrotate Plesk PHP-FPM
+          copy:
+            dest: /etc/systemd/system/logrotate-plesk-php.service
+            content: |
+              [Unit]
+              Description=Logrotate for Plesk PHP-FPM
 
-    - name: Create systemd service file if files found
-      copy:
-        dest: /etc/systemd/system/logrotate-plesk-php-fpm.service
-        content: |
-          [Unit]
-          Description=Rotate logs for Plesk PHP versions only
+              [Service]
+              Type=oneshot
+              ExecStart=/usr/sbin/logrotate {{ master_config }}
 
-          [Service]
-          Type=oneshot
-          ExecStart=/usr/sbin/logrotate /etc/logrotate.plesk-php.conf
-      when: php_logrotate_paths | length > 0
+        - name: Crear systemd timer para logrotate Plesk PHP-FPM
+          copy:
+            dest: /etc/systemd/system/logrotate-plesk-php.timer
+            content: |
+              [Unit]
+              Description=Daily logrotate for Plesk PHP-FPM
 
-    - name: Remove systemd service file if no files found
-      file:
-        path: /etc/systemd/system/logrotate-plesk-php-fpm.service
-        state: absent
-      when: php_logrotate_paths | length == 0
+              [Timer]
+              OnCalendar=daily
+              Persistent=true
 
-    - name: Create systemd timer file if files found
-      copy:
-        dest: /etc/systemd/system/logrotate-plesk-php-fpm.timer
-        content: |
-          [Unit]
-          Description=Daily timer for Plesk PHP logrotate
+              [Install]
+              WantedBy=timers.target
 
-          [Timer]
-          OnCalendar=daily
-          Persistent=true
+        - name: Recargar systemd y habilitar timer
+          systemd:
+            daemon_reload: yes
+            name: logrotate-plesk-php.timer
+            enabled: yes
+            state: started
+      when: all_fpm_files.files | length > 0
 
-          [Install]
-          WantedBy=timers.target
-      when: php_logrotate_paths | length > 0
+    - name: Limpiar master config y systemd si no hay FPM
+      block:
+        - name: Eliminar master config si no hay FPM
+          file:
+            path: "{{ master_config }}"
+            state: absent
 
-    - name: Remove systemd timer file if no files found
-      file:
-        path: /etc/systemd/system/logrotate-plesk-php-fpm.timer
-        state: absent
-      when: php_logrotate_paths | length == 0
+        - name: Eliminar systemd service y timer si no hay FPM
+          file:
+            path: "/etc/systemd/system/logrotate-plesk-php.{{ item }}"
+            state: absent
+          loop:
+            - service
+            - timer
 
-    - name: Wait briefly to ensure systemd sees new unit files
-      pause:
-        seconds: 2
-      when: php_logrotate_paths | length > 0
-
-    - name: Reload systemd to recognize new units if files found
-      command: systemctl daemon-reload
-      when: php_logrotate_paths | length > 0
-
-    - name: Enable and start logrotate timer if files found
-      systemd:
-        name: logrotate-plesk-php-fpm.timer
-        enabled: yes
-        state: started
-      when: php_logrotate_paths | length > 0
+        - name: Recargar systemd
+          systemd:
+            daemon_reload: yes
+      when: all_fpm_files.files | length == 0
