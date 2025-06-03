@@ -1,55 +1,55 @@
 ---
-- name: Configure logrotate for Plesk PHP-FPM with synthetic creation
+- name: Ensure synthetic logrotate configs for Plesk PHP-FPM
   hosts: all
   tasks:
 
-    - name: Find plesk-php* files (NOT fpm) in /etc/logrotate.d
+    - name: Find plesk-php* (non-fpm) files in /etc/logrotate.d
       find:
         paths: /etc/logrotate.d/
         patterns: "plesk-php*"
         file_type: file
-      register: php_logrotate_nonfmp_files
+      register: php_logrotate_all_files
 
-    - name: Filter only those that are NOT -fmp
+    - name: Filter only plesk-phpXX (not -fpm) base names
       set_fact:
-        php_nonfmp_bases: >-
+        php_nonfpm_bases: >-
           {{
-            php_logrotate_nonfmp_files.files
+            php_logrotate_all_files.files
             | map(attribute='path')
-            | select('search', 'plesk-php[0-9]+$')
             | map('basename')
+            | select('match', '^plesk-php[0-9]+$')
             | list
           }}
 
-    - name: Debug found plesk-php* (non-fmp) files
-      debug:
-        msg: "Found plesk-php* files: {{ php_nonfmp_bases }}"
-
-    - name: Find existing plesk-php*-fmp logrotate files
+    - name: Find existing plesk-php*-fpm logrotate files
       find:
         paths: /etc/logrotate.d/
-        patterns: "plesk-php*-fmp"
+        patterns: "plesk-php*-fpm"
         file_type: file
-      register: php_logrotate_fmp_files
+      register: php_logrotate_fpm_files
 
-    - name: Extract existing fmp base names
+    - name: Extract existing fpm base names
       set_fact:
-        php_fmp_bases: >-
+        php_fpm_bases: >-
           {{
-            php_logrotate_fmp_files.files
+            php_logrotate_fpm_files.files
             | map(attribute='path')
             | map('basename')
-            | map('regex_replace', '-fmp$', '')
+            | map('regex_replace', '^plesk-php([0-9]+)-fpm$', 'plesk-php\\1')
             | list
           }}
 
-    - name: Debug existing fmp files
+    - name: Debug - non-fpm bases
       debug:
-        msg: "Existing fmp files: {{ php_fmp_bases }}"
+        var: php_nonfpm_bases
 
-    - name: Create synthetic fmp for each plesk-phpXX that doesn't have its -fmp
+    - name: Debug - fpm bases
+      debug:
+        var: php_fpm_bases
+
+    - name: Create synthetic -fpm logrotate config for each plesk-phpXX missing it
       shell: |
-        echo '/var/log/{{ item }}-fmp/*log {
+        echo '/var/log/{{ item }}-fpm/*log {
             daily
             missingok
             notifempty
@@ -61,22 +61,22 @@
             compress
             create 640 root root
             postrotate
-                /bin/kill -SIGUSR1 `cat /run/{{ item }}-fmp.pid 2>/dev/null` 2>/dev/null || true
+                /bin/kill -SIGUSR1 `cat /run/{{ item }}-fpm.pid 2>/dev/null` 2>/dev/null || true
             endscript
-        }' | tee /etc/logrotate.d/{{ item }}-fmp
+        }' > /etc/logrotate.d/{{ item }}-fpm
       args:
         executable: /bin/bash
-      loop: "{{ php_nonfmp_bases }}"
-      when: item not in php_fmp_bases
+      loop: "{{ php_nonfpm_bases }}"
+      when: item not in php_fpm_bases
 
-    - name: Re-scan for plesk-php*-fmp logrotate files after synthetic creation
+    - name: Re-scan for plesk-php*-fpm logrotate files after synthetic creation
       find:
         paths: /etc/logrotate.d/
-        patterns: "plesk-php*-fmp"
+        patterns: "plesk-php*-fpm"
         file_type: file
       register: php_logrotate_files_final
 
-    - name: Extract final fmp file paths
+    - name: Extract final fpm file paths
       set_fact:
         php_logrotate_paths: "{{ php_logrotate_files_final.files | map(attribute='path') | list }}"
 
@@ -94,7 +94,7 @@
           {% endfor %}
       when: php_logrotate_paths | length > 0
 
-    - name: Remove logrotate config if no plesk-php fmp files found
+    - name: Remove logrotate config if no plesk-php fpm files found
       file:
         path: /etc/logrotate.plesk-php.conf
         state: absent
@@ -102,7 +102,7 @@
 
     - name: Create systemd service file if files found
       copy:
-        dest: /etc/systemd/system/logrotate-plesk-php-fmp.service
+        dest: /etc/systemd/system/logrotate-plesk-php-fpm.service
         content: |
           [Unit]
           Description=Rotate logs for Plesk PHP versions only
@@ -114,13 +114,13 @@
 
     - name: Remove systemd service file if no files found
       file:
-        path: /etc/systemd/system/logrotate-plesk-php-fmp.service
+        path: /etc/systemd/system/logrotate-plesk-php-fpm.service
         state: absent
       when: php_logrotate_paths | length == 0
 
     - name: Create systemd timer file if files found
       copy:
-        dest: /etc/systemd/system/logrotate-plesk-php-fmp.timer
+        dest: /etc/systemd/system/logrotate-plesk-php-fpm.timer
         content: |
           [Unit]
           Description=Daily timer for Plesk PHP logrotate
@@ -135,7 +135,7 @@
 
     - name: Remove systemd timer file if no files found
       file:
-        path: /etc/systemd/system/logrotate-plesk-php-fmp.timer
+        path: /etc/systemd/system/logrotate-plesk-php-fpm.timer
         state: absent
       when: php_logrotate_paths | length == 0
 
@@ -150,7 +150,7 @@
 
     - name: Enable and start logrotate timer if files found
       systemd:
-        name: logrotate-plesk-php-fmp.timer
+        name: logrotate-plesk-php-fpm.timer
         enabled: yes
         state: started
       when: php_logrotate_paths | length > 0
