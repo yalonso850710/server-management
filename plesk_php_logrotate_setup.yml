@@ -19,28 +19,25 @@
       debug:
         msg: "Found existing logrotate files: {{ existing_php_logrotate_paths }}"
 
-    # Fallback: Check for plesk-php binaries if no logrotate configs found
-    - name: Find plesk-php binaries (excluding -fpm) if no logrotate configs exist
+    # Find plesk-php binaries (excluding -fpm)
+    - name: Find plesk-php binaries (excluding -fpm)
       find:
         paths: /opt/plesk/php/
         patterns: "plesk-php*"
         file_type: file
         excludes: "*-fpm"
       register: php_binaries
-      when: existing_php_logrotate_paths | length == 0
 
     - name: Extract PHP versions from binary paths
       set_fact:
         detected_php_versions: "{{ php_binaries.files | map(attribute='path') | map('basename') | list }}"
-      when: existing_php_logrotate_paths | length == 0 and php_binaries.files is defined
 
     - name: Debug detected PHP versions
       debug:
         msg: "Detected PHP versions: {{ detected_php_versions | default([]) }}"
-      when: existing_php_logrotate_paths | length == 0
 
-    # Create synthetic logrotate configs for detected PHP versions
-    - name: Create synthetic plesk-php*-fpm logrotate configs
+    # Create synthetic logrotate configs for detected PHP versions if they don't exist
+    - name: Create synthetic plesk-php*-fpm logrotate configs if they don't exist
       copy:
         dest: "/etc/logrotate.d/{{ item }}-fpm"
         content: |
@@ -61,7 +58,7 @@
           }
         mode: '0644'
       loop: "{{ detected_php_versions | default([]) }}"
-      when: existing_php_logrotate_paths | length == 0 and detected_php_versions is defined
+      when: "'/etc/logrotate.d/{{ item }}-fpm' not in existing_php_logrotate_paths"
       register: synthetic_configs_created
 
     # Re-scan for logrotate files after creating synthetic ones
@@ -152,7 +149,7 @@
       file:
         path: "{{ item.item }}"
         state: absent
-      loop: "{{ fmp_pid_check.results | default([]) }}"
+      loop: "{{ fpm_pid_check.results | default([]) }}"
       when: 
         - synthetic_configs_created is defined 
         - synthetic_configs_created.changed
@@ -193,4 +190,3 @@
           - Logrotate files found/created: {{ final_php_logrotate_paths | length }}
           - Systemd timer status: {{ 'enabled' if final_php_logrotate_paths | length > 0 else 'disabled' }}
           - Configuration files: {{ final_php_logrotate_paths | join(', ') if final_php_logrotate_paths | length > 0 else 'none' }}
-
