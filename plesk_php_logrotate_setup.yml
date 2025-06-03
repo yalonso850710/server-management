@@ -4,159 +4,154 @@
   become: yes
   vars:
     logrotate_dir: /etc/logrotate.d
-    systemd_service: logrotate-plesk-php-fpm.service
-    systemd_timer: logrotate-plesk-php-fpm.timer
 
   tasks:
+    - name: Find existing plesk-php*-fpm logrotate files
+      find:
+        paths: "{{ logrotate_dir }}"
+        patterns: "plesk-php*-fpm"
+      register: fpm_files_found
 
-  - name: Find plesk-php*-fpm logrotate files
-    find:
-      paths: "{{ logrotate_dir }}"
-      patterns: "plesk-php*-fpm"
-      file_type: file
-    register: fpm_files
+    - name: Find existing plesk-php* logrotate files excluding -fpm
+      find:
+        paths: "{{ logrotate_dir }}"
+        patterns: "plesk-php*"
+      register: php_files_found
 
-  - name: Find plesk-php* logrotate files excluding -fpm
-    find:
-      paths: "{{ logrotate_dir }}"
-      patterns: "plesk-php*"
-      file_type: file
-    register: all_php_files
+    - name: Filter plesk-php files excluding those with -fpm in name
+      set_fact:
+        php_files_no_fpm: "{{ php_files_found.files | reject('search', '-fpm') | list }}"
 
-  - name: Filter plesk-php files excluding those with -fpm in name
-    set_fact:
-      non_fpm_files: "{{ all_php_files.files | reject('search', '-fpm') | list }}"
+    - name: Extract base php names without path for non-fpm files
+      set_fact:
+        php_bases: "{{ php_files_no_fpm | map(attribute='path') | map('basename') | map('regex_replace', '^plesk-(php[0-9]+)$', '\\1') | list }}"
 
-  - name: Extract base php names without path for non-fpm files
-    set_fact:
-      non_fpm_bases: "{{ non_fpm_files | map(attribute='path') | map('basename') | map('regex_replace', '^plesk-(php[0-9]+)$', '\\1') | list }}"
+    - name: Extract base php-fpm names without path and -fpm suffix
+      set_fact:
+        fpm_bases: "{{ fpm_files_found.files | map(attribute='path') | map('basename') | map('regex_replace', '^plesk-(php[0-9]+)-fpm$', '\\1') | list }}"
 
-  - name: Extract base php-fpm names without path and -fpm suffix
-    set_fact:
-      fpm_bases: "{{ fpm_files.files | map(attribute='path') | map('basename') | map('regex_replace', '^plesk-(php[0-9]+)-fpm$', '\\1') | list }}"
+    - name: Determine missing fpm files to create
+      set_fact:
+        missing_fpm_bases: "{{ php_bases | difference(fpm_bases) }}"
 
-  - name: Determine missing fpm files to create
-    set_fact:
-      missing_fpm_bases: "{{ non_fpm_bases | difference(fpm_bases) }}"
+    - debug:
+        var: missing_fpm_bases
 
-  - name: Create plesk-php*-fpm logrotate files if missing
-    copy:
-      dest: "{{ logrotate_dir }}/plesk-{{ item }}-fpm"
-      content: |
-        /var/log/plesk-{{ item }}-fpm/*log {
-            daily
-            missingok
-            notifempty
-            sharedscripts
-            delaycompress
-            dateext
-            dateformat -%Y%m%d
-            rotate 7
-            compress
-            create 640 root root
-            postrotate
-                /bin/kill -SIGUSR1 `cat /run/plesk-{{ item }}-fpm.pid 2>/dev/null` 2>/dev/null || true
-            endscript
-        }
-      owner: root
-      group: root
-      mode: '0640'
-    loop: "{{ missing_fpm_bases }}"
-    when: missing_fpm_bases | length > 0
+    - name: Create plesk-php*-fpm logrotate files if missing
+      copy:
+        dest: "{{ logrotate_dir }}/plesk-{{ item }}-fpm"
+        content: |
+          /var/log/plesk-{{ item }}-fpm/*log {
+              daily
+              missingok
+              notifempty
+              sharedscripts
+              delaycompress
+              dateext
+              dateformat -%Y%m%d
+              rotate 7
+              compress
+              create 640 root root
+              postrotate
+                  /bin/kill -SIGUSR1 `cat /run/plesk-{{ item }}-fpm.pid 2>/dev/null` 2>/dev/null || true
+              endscript
+          }
+        owner: root
+        group: root
+        mode: '0640'
+      loop: "{{ missing_fpm_bases }}"
+      when: missing_fpm_bases | length > 0
 
-  - name: Refresh fpm_files list including newly created files
-    find:
-      paths: "{{ logrotate_dir }}"
-      patterns: "plesk-php*-fpm"
-      file_type: file
-    register: fpm_files_updated
+    - name: Refresh fpm_files list including newly created files
+      find:
+        paths: "{{ logrotate_dir }}"
+        patterns: "plesk-php*-fpm"
+      register: fpm_files_all
 
-  - name: Extract full paths of all plesk-php*-fpm files
-    set_fact:
-      logrotate_php_fpm_files: "{{ fpm_files_updated.files | map(attribute='path') | list }}"
+    - name: Extract full paths of all plesk-php*-fpm files
+      set_fact:
+        fpm_file_paths: "{{ fpm_files_all.files | map(attribute='path') | list }}"
 
-  - name: Create logrotate include config for Plesk PHP-FPM if files found
-    copy:
-      dest: "{{ logrotate_dir }}/plesk-php-fpm-include"
-      content: |
-        {{ logrotate_php_fpm_files | map('basename') | map('regex_replace', '^', '/etc/logrotate.d/') | join(' ') }}
-      owner: root
-      group: root
-      mode: '0644'
-    when: logrotate_php_fpm_files | length > 0
+    - name: Create logrotate include config for Plesk PHP-FPM if files found
+      copy:
+        dest: "{{ logrotate_dir }}/plesk-php-fpm-include"
+        content: |
+          include {{ logrotate_dir }}/plesk-php*-fpm
+        owner: root
+        group: root
+        mode: '0644'
+      when: fpm_file_paths | length > 0
 
-  - name: Remove logrotate include config if no plesk-php-fpm files found
-    file:
-      path: "{{ logrotate_dir }}/plesk-php-fpm-include"
-      state: absent
-    when: logrotate_php_fpm_files | length == 0
+    - name: Remove logrotate include config if no plesk-php-fpm files found
+      file:
+        path: "{{ logrotate_dir }}/plesk-php-fpm-include"
+        state: absent
+      when: fpm_file_paths | length == 0
 
-  - name: Create systemd service file if fpm files found
-    copy:
-      dest: /etc/systemd/system/{{ systemd_service }}
-      content: |
-        [Unit]
-        Description=Run logrotate for Plesk PHP-FPM log files
+    - name: Create systemd service file if fpm files found
+      copy:
+        dest: /etc/systemd/system/logrotate-plesk-php-fpm.service
+        content: |
+          [Unit]
+          Description=Run logrotate for Plesk PHP-FPM logs
+          ConditionPathExists={{ logrotate_dir }}/plesk-php-fpm-include
 
-        [Service]
-        Type=oneshot
-        ExecStart=/usr/sbin/logrotate /etc/logrotate.conf
-      owner: root
-      group: root
-      mode: '0644'
-    when: logrotate_php_fpm_files | length > 0
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/sbin/logrotate /etc/logrotate.conf -s /var/lib/logrotate/status --include={{ logrotate_dir }}/plesk-php-fpm-include
+        owner: root
+        group: root
+        mode: '0644'
+      when: fpm_file_paths | length > 0
 
-  - name: Remove systemd service file if no fpm files found
-    file:
-      path: /etc/systemd/system/{{ systemd_service }}
-      state: absent
-    when: logrotate_php_fpm_files | length == 0
+    - name: Remove systemd service file if no fpm files found
+      file:
+        path: /etc/systemd/system/logrotate-plesk-php-fpm.service
+        state: absent
+      when: fpm_file_paths | length == 0
 
-  - name: Create systemd timer file if fpm files found
-    copy:
-      dest: /etc/systemd/system/{{ systemd_timer }}
-      content: |
-        [Unit]
-        Description=Run logrotate timer for Plesk PHP-FPM logs
+    - name: Create systemd timer file if fpm files found
+      copy:
+        dest: /etc/systemd/system/logrotate-plesk-php-fpm.timer
+        content: |
+          [Unit]
+          Description=Run logrotate-plesk-php-fpm.service daily
 
-        [Timer]
-        OnCalendar=daily
-        Persistent=true
+          [Timer]
+          OnCalendar=daily
+          Persistent=true
 
-        [Install]
-        WantedBy=timers.target
-      owner: root
-      group: root
-      mode: '0644'
-    when: logrotate_php_fpm_files | length > 0
+          [Install]
+          WantedBy=timers.target
+        owner: root
+        group: root
+        mode: '0644'
+      when: fpm_file_paths | length > 0
 
-  - name: Remove systemd timer file if no fpm files found
-    file:
-      path: /etc/systemd/system/{{ systemd_timer }}
-      state: absent
-    when: logrotate_php_fpm_files | length == 0
+    - name: Remove systemd timer file if no fpm files found
+      file:
+        path: /etc/systemd/system/logrotate-plesk-php-fpm.timer
+        state: absent
+      when: fpm_file_paths | length == 0
 
-  - name: Reload systemd to recognize new/removed units
-    command: systemctl daemon-reload
-    changed_when: true
+    - name: Reload systemd to recognize new/removed units
+      command: systemctl daemon-reload
+      changed_when: true
+      when: fpm_file_paths | length > 0 or
+            (fpm_file_paths | length == 0)
 
-  - name: Enable and start logrotate timer if fpm files found
-    systemd:
-      name: "{{ systemd_timer }}"
-      enabled: yes
-      state: started
-    when: logrotate_php_fpm_files | length > 0
+    - name: Enable and start logrotate timer if fpm files found
+      systemd:
+        name: logrotate-plesk-php-fpm.timer
+        enabled: yes
+        state: started
+      when: fpm_file_paths | length > 0
 
-  - name: Check if logrotate timer unit exists
-    stat:
-      path: "/etc/systemd/system/{{ systemd_timer }}"
-    register: timer_unit
+    - name: Disable and stop logrotate timer if no fpm files found
+      systemd:
+        name: logrotate-plesk-php-fpm.timer
+        enabled: no
+        state: stopped
+      when: fpm_file_paths | length == 0
+      ignore_errors: yes  # En caso de que no exista el timer para detener
 
-  - name: Disable and stop logrotate timer if no fpm files found and unit exists
-    systemd:
-      name: "{{ systemd_timer }}"
-      enabled: no
-      state: stopped
-    when:
-      - logrotate_php_fpm_files | length == 0
-      - timer_unit.stat.exists
